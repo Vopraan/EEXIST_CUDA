@@ -1,0 +1,521 @@
+
+
+
+__global__ void GenerateTubes(FSystem* System, FReig)
+{
+
+}
+__global__ void UpdateSystem()
+{
+
+}
+__global__ void StoreTopPerformingBias()
+
+
+__global__ void ClearBuffer(FBuffer* Buffer)
+{
+	int i = threadIdx.x;
+
+	int x = i % SIZE;
+	int y = i / SIZE;
+
+	Buffer->Buffer[x][y].DesX = 69.0f;
+
+	printf("\n%d, %d", x, y);
+
+	return;
+
+	Buffer->Buffer[x][y].DesX = 0.0f;
+	Buffer->Buffer[x][y].DesY = 0.0f;
+
+	Buffer->Buffer[x][y].SrcX = 0.0f;
+	Buffer->Buffer[x][y].SrcY = 0.0f;
+
+}
+__global__ void UpdateTube(double* Karma, FSystem* System, FBuffer* Buffer, double delta)
+{
+	double* Take;
+	*Take = delta;
+
+	int i = threadIdx.x;
+
+	int x = i % SIZE;
+	int y = i / SIZE;
+
+	//Where to take chems from Sutract delta from this location
+	int SrcX = (int)System->Tubes[x][y].SrcX;
+	int SrcY = (int)System->Tubes[x][y].SrcY;
+
+	//Where to put chemicals add delta to this location
+	int DesX = (int)System->Tubes[x][y].DesX;
+	int DesY = (int)System->Tubes[x][y].DesY;
+
+	//Add Offset For Src (Bias)
+	SrcX = SrcX + System->BiasSrc[x][y].OffsetX;
+	SrcY = SrcY + System->BiasSrc[x][y].OffsetY;
+
+	//Add Offset For Des (Bias)
+	DesX = DesX + System->BiasDes[x][y].OffsetX;
+	DesY = DesY + System->BiasDes[x][y].OffsetY;
+
+	//Mod the Src And Dest To Keep Values In Range So Not taking chems or putting chems ouside of data array
+	SrcX = (SrcX + SIZE) % SIZE;
+	SrcY = (SrcY + SIZE) % SIZE;
+	DesX = (DesX + SIZE) % SIZE;
+	DesY = (DesY + SIZE) % SIZE;
+
+	//Iterate Through All Points Within KArma Cordiante Points Away
+	for (int Kx = -*Karma; Kx < *Karma; Kx++)
+	{
+		for (int Ky = -*Karma; Ky < *Karma; Ky++)
+		{
+			//Make Sure The Actaul Physical Disatnce From The Point To Source Is <= To Karma
+			double KarmaDistance = sqrtf(powf(SrcX + Kx, 2) + powf(SrcY + Ky, 2));
+			if (KarmaDistance <= *Karma)
+			{
+				//Fit Spots Around Karma Into Array Size
+				int KSrcX = (SrcX + Kx + SIZE) % SIZE;
+				int KSrcY = (SrcY + Ky + SIZE) % SIZE;
+				int KDesX = (DesX + Kx + SIZE) % SIZE;
+				int KDesY = (DesY + Ky + SIZE) % SIZE;
+
+				//Calcaute How May Chemicals To Take From SOurce And Be TRansfered To Des
+				GetChemToTake <<<1, 0>>> (*Karma, KarmaDistance, Buffer->Buffer[KSrcX][KSrcY].SrcX, Buffer->Buffer[KDesX][KDesY].SrcX, Take);
+				double KSrcXTake = *Take;
+				*Take = delta;
+				GetChemToTake <<<1, 0 >>> (*Karma, KarmaDistance, Buffer->Buffer[KSrcX][KSrcY].SrcY, Buffer->Buffer[KDesX][KDesY].SrcY, Take);
+				double KSrcYTake = *Take;
+				*Take = delta;
+
+				GetChemToTake <<<1, 0 >>> (*Karma, KarmaDistance, Buffer->Buffer[KSrcX][KSrcY].DesX, Buffer->Buffer[KDesX][KDesY].DesX, Take);
+				double KDesXTake = *Take;
+				*Take = delta;
+				GetChemToTake <<<1, 0 >>> (*Karma, KarmaDistance, Buffer->Buffer[KSrcX][KSrcY].DesY, Buffer->Buffer[KDesX][KDesY].DesY, Take);
+				double KDesYTake = *Take;
+				*Take = delta;
+
+				//Take Chemicals From Src
+				Buffer->Buffer[KSrcX][KSrcY].SrcX = Buffer->Buffer[KSrcX][KSrcY].SrcX - KSrcXTake;
+				Buffer->Buffer[KSrcX][KSrcY].SrcY = Buffer->Buffer[KSrcX][KSrcY].SrcY - KSrcYTake;
+
+				Buffer->Buffer[KSrcX][KSrcY].DesX = Buffer->Buffer[KSrcX][KSrcY].DesX - KDesXTake;
+				Buffer->Buffer[KSrcX][KSrcY].DesY = Buffer->Buffer[KSrcX][KSrcY].DesY - KDesYTake;
+
+				//Put Chemicals In Des
+				Buffer->Buffer[KDesX][KDesY].SrcX = Buffer->Buffer[KDesX][KDesY].SrcX + KSrcXTake;
+				Buffer->Buffer[KDesX][KDesY].SrcY = Buffer->Buffer[KDesX][KDesY].SrcY + KSrcYTake;
+
+				Buffer->Buffer[KDesX][KDesY].DesX = Buffer->Buffer[KDesX][KDesY].DesX + KDesXTake;
+				Buffer->Buffer[KDesX][KDesY].DesY = Buffer->Buffer[KDesX][KDesY].DesY + KDesYTake;
+			}
+		}
+	}
+}
+__global__ void ApplyChange(FSystem* System, FBuffer* Buffer)
+{
+	int i = threadIdx.x;
+
+	int x = i % SIZE;
+	int y = i / SIZE;
+
+	//Update Des Chemicals
+	System->Tubes[x][y].DesX = System->Tubes[x][y].DesX + Buffer->Buffer[x][y].DesX;
+	System->Tubes[x][y].DesY = System->Tubes[x][y].DesY + Buffer->Buffer[x][y].DesY;
+	System->Tubes[x][y].SrcX = System->Tubes[x][y].SrcX + Buffer->Buffer[x][y].SrcX;
+	System->Tubes[x][y].SrcY = System->Tubes[x][y].SrcY + Buffer->Buffer[x][y].SrcY;
+
+}
+
+//Declarations
+EMode GetMode();
+FILE* GetTrainerFile();
+void ReadTrainerDataFromFile(FILE* File, int* SystemsToRun, int* RunsBeforeGuess, int* Generations, int* GuessesPerGen, double* Mutation, int* TopPerformerBreed, int* NumOfImages, FImage** Images, EReigonType* Reigons);
+void RunTrainer(FSystem* Systems, int* SystemsToRun, int* RunsBeforeGuess, int* Generations, int* GuessesPerGen, double* Mutation, int* TopPerformerBreed, int* NumOfImages, FImage** Images, EReigonType* Reigons);
+void GenerateRandomBiases(FTube*** Biases, int NumOfSystems);
+
+int UpdateSystem(FSystem*, FBuffer*, double, double);
+int GetCycles();
+int GetNumOfSystems();
+double GetKarma();
+int OutputSystem(FSystem*, int, int );
+void GenerateSystem(FSystem*);
+
+
+
+void ReadTrainerDataFromFile(FILE* File, int* SystemsToRun, int* RunsBeforeGuess, int* Generations, int* GuessesPerGen, double* Mutation, int* TopPerformerBreed, int* NumOfImages, FImage** Images, EReigonType* Reigons)
+{
+	if (File = NULL) { return; }
+
+	//Get Systems To Run
+	char Systems[10];
+	fgets(Systems, 5, File);
+	sscanf(Systems, "%d", SystemsToRun);
+
+	//Get Runs Before ASking For Guess
+	char RunsBeforeAsking[10];
+	fgets(RunsBeforeAsking, 5, File);
+	sscanf(RunsBeforeAsking, "%d", RunsBeforeGuess);
+
+	//Get Number Of Generations
+	char NumOfGenerations[10];
+	fgets(NumOfGenerations, 5, File);
+	sscanf(NumOfGenerations, "%d", Generations);
+
+	//Get Amount Of Times To Trial Each Bias Each Genrations
+	char NumOfTrials[10];
+	fgets(NumOfTrials, 5, File);
+	sscanf(NumOfTrials, "%d", GuessesPerGen);
+
+	//Get Mutation Rate
+	char MutationRate[32];
+	fgets(MutationRate, 5, File);
+	sscanf(MutationRate, "%lf", Mutation);
+
+	//Get Number Of Biases To Select For Breeding
+	char NumOfBreeders[32];
+	fgets(NumOfBreeders, 5, File);
+	sscanf(NumOfBreeders, "%d", TopPerformerBreed);
+
+	//Get Number Of Images In File
+	char NumOfImagesInFile[32];
+	fgets(NumOfImagesInFile, 5, File);
+	sscanf(NumOfImagesInFile, "%d", NumOfImages);
+
+	//Get Base Tube Chem Levels
+	for (int y = 1; y <= SIZE; y++)
+	{
+		char TubeTypeRow[1300];
+
+		fgets(TubeTypeRow, 1300, File);
+
+		for (int x = 1; x <= SIZE; x++)
+		{
+			char point[2];
+			point[0] = TubeTypeRow[2 * (x - 1)];
+			point[1] = '\0';
+
+			int ReigonType = 0;
+			sscanf(point, "%d", &ReigonType);
+
+			Reigons[(x - 1) + ((y - 1) * SIZE)] = (EReigonType)ReigonType;
+		}
+	}
+
+	//Get Images
+	*Images = (FImage*)malloc(sizeof(FImage) * (*NumOfImages));
+	char Empty[1];
+	fgets(Empty, 1, File);
+
+	for (int i = 0; i < *NumOfImages; i++)
+	{
+		//Get Image Size
+		char ImageSize[20];
+		fgets(ImageSize, 20, File);
+		sscanf(ImageSize, "%d %d", &((*Images)[i].x), &((*Images)[i].y));
+
+		//Get Image Correct Answer
+		char ImageAnswer[5];
+		fgets(ImageAnswer, 20, File);
+		sscanf(ImageAnswer, "%d", &((*Images)[i].CorrectIdentification));
+
+		//Iterate Through Y Lines Of Image
+		for (int y = 1; y <= (*Images)[i].y; y++)
+		{
+			//Get All Pixel RGB Values From Horizontal Row
+			char* RGBLine = (char*)malloc(sizeof(char) * 37 * SIZE);
+			fgets(RGBLine, sizeof(char) * 37 * SIZE, File);
+
+			//Itearte Through All Picles In That Row
+			for (int x = 1; x < (*Images)[i].x; x++)
+			{
+				char PixelChar[37];
+
+				//Get Pixel Data And Put It Into Its Own String
+				for (int j = 0; j < 37; j++)
+				{
+					PixelChar[j] = RGBLine[((x - 1) * 37) + j];
+				}
+
+				//Scan Pixerl For RGB Information
+				sscanf(PixelChar, "%lf %lf %lf %lf", &((*Images)[i].Pixels[x - 1][y - 1].SrcX), &((*Images)[i].Pixels[x - 1][y - 1].SrcY), &((*Images)[i].Pixels[x - 1][y - 1].DesX), &((*Images)[i].Pixels[x - 1][y - 1].DesY));
+			}
+		}
+	}
+}
+
+
+
+void GenerateRandomBiases(FTube*** Biases, int NumOfSystems)
+{
+	for (int i = 0; i < NumOfSystems; i++)
+	{
+		for (int x = 0; x < SIZE; x++)
+		{
+			for (int y = 0; y < SIZE; y++)
+			{
+				Biases[i][x][y].SrcX = (rand() % SIZE);
+				Biases[i][x][y].SrcY = (rand() % SIZE);
+				Biases[i][x][y].DesX = (rand() % SIZE);
+				Biases[i][x][y].DesY = (rand() % SIZE);
+			}
+		}
+	}
+}
+
+void GenerateSystem(FSystem* System)
+{
+	for (int y = 0; y < SIZE; y++)
+	{
+		for (int x = 0; x < SIZE; x++)
+		{
+			//Gen Random Source Chem Value
+			System->Tubes[x][y].SrcX = (rand() % (int)sqrtf(sizeof(System->Tubes) / 32));
+			System->Tubes[x][y].SrcY = (rand() % (int)sqrtf(sizeof(System->Tubes) / 32));
+
+			//Gen Random Destination Chem Value
+			System->Tubes[x][y].DesX = (rand() % (int)sqrtf(sizeof(System->Tubes) / 32));
+			System->Tubes[x][y].DesY = (rand() % (int)sqrtf(sizeof(System->Tubes) / 32));
+
+			//Genrate Random Bias (Genetic Code) NOTE: Subtract Coords to Keep Bias In Range
+			System->BiasSrc[x][y].OffsetX = (rand() % (int)sqrtf(sizeof(System->BiasSrc) / 8) - System->Tubes[x][y].SrcX);
+			System->BiasSrc[x][y].OffsetY = (rand() % (int)sqrtf(sizeof(System->BiasSrc) / 8) - System->Tubes[x][y].SrcY);
+
+			System->BiasDes[x][y].OffsetX = (rand() % (int)sqrtf(sizeof(System->BiasDes) / 8) - System->Tubes[x][y].DesX);
+			System->BiasDes[x][y].OffsetY = (rand() % (int)sqrtf(sizeof(System->BiasDes) / 8) - System->Tubes[x][y].DesY);
+		}
+	}
+}
+
+int UpdateSystem(FSystem* System, FBuffer* Buffer,  double Karma, double delta)
+{
+
+	ClearBuffer	<<<1, SIZE * SIZE >>> (Buffer);
+	cudaDeviceSynchronize();
+
+	UpdateTube	<<<1, SIZE * SIZE >>> (&Karma, System, Buffer, delta);
+	cudaDeviceSynchronize();
+
+	ApplyChange	<<<1, SIZE * SIZE >>> (System, Buffer);
+	cudaDeviceSynchronize();
+
+	return 0;
+}
+
+EMode GetMode()
+{
+	char Input[5];
+
+	printf("Do you want to train a bias or test a bias? 1: train 2: test?\n");
+	fgets(Input, 5, stdin);
+
+	int Answer = 0;
+	sscanf(Input, "%d", &Answer);
+
+	return (EMode)(Answer - 1);
+}
+
+FILE* GetTrainerFile()
+{
+	char Input[512];
+	printf("Please enter location of traner file.\n");
+
+	fgets(Input, 512, stdin);
+	Input[strlen(Input) - 1] = '\0';
+	FILE* TrainFile = fopen(Input, "r");
+
+	if (TrainFile != NULL)
+	{
+		return TrainFile;
+	}
+	else
+	{
+		printf("Failed to foind file.\n");
+		return NULL;
+	}
+
+	return NULL;
+}
+
+int GetNumOfSystems()
+{
+	char Input[120];
+	int NumOfSystems = 0;
+
+	//Get How Many Systems To Run
+	printf("How Many Systems Do You Want To Run? (A System Is A Single Instance Of The EEXIST Program)\n");
+
+	fgets(Input, 120, stdin);
+	sscanf(Input, "%d", &NumOfSystems);
+
+	return NumOfSystems;
+}
+
+double GetKarma()
+{
+	char Input[120];
+	double Karma = 0.0f;
+
+	//Get The Karma Value
+	printf("What Value Do You Want For Karma? (Karma Is The Radius Of Which Checmical IS Tooken And Transfered To)\n");
+
+	fgets(Input, 120, stdin);
+	sscanf(Input, "%lf", &Karma);
+
+	return Karma;
+}
+
+int GetCycles()
+{
+	char Input[120];
+	int Cycles = 0;
+
+	//Get The Karma Value
+	printf("How Many Cycles Would You Like To Run? (This Is How Many Times The System Update Before Stoping NOTE: Can Be Lengthy Process)\n");
+
+	fgets(Input, 120, stdin);
+	sscanf(Input, "%d", &Cycles);
+
+	return Cycles;
+}
+
+int OutputSystem(FSystem* System, int SysID, int InstanceID)
+{
+	char FileName[120] = "C:\\EEXIST\\EOutSys";
+	char Instance[20] = "Int";
+	char FileType[20] = ".out";
+	sprintf(FileName, "%s%d%s%d%s", FileName, SysID, Instance, InstanceID, FileType);
+
+	FILE* OUT = fopen(FileName, "w");
+
+	if (OUT == NULL)
+	{
+		printf("Failed To Open TXT");
+		return 0;
+	}
+
+	for (int Y = 0; Y < SIZE; Y++)
+	{
+		for (int X = 0; X < SIZE; X++)
+		{
+			fprintf(OUT, "%06.2lf %06.2lf %06.2lf %06.2lf    ", System->Tubes[X][Y].SrcX, System->Tubes[X][Y].SrcY, System->Tubes[X][Y].DesX, System->Tubes[X][Y].DesY);
+		}
+	}
+
+	fclose(OUT);
+}
+
+/*
+	FILE* OUT = fopen("EOUT.txt", "w");
+
+	if (OUT == NULL)
+	{
+		printf("Failed To Open TXT");
+		return 0;
+	}
+
+	printf("\n\n\n\n\nWrote To File\n\n\n\n\n");
+
+	fprintf(OUT, "I'm writting to this file");
+
+	fclose(OUT);
+
+	FILE* IN = fopen("EOUT.txt", "r");
+
+	char Test[120];
+
+	fscanf(IN, "%s", &Test);
+
+	printf("\n\n\n\n Found: %s \n\n\n\n\n", Test);
+
+	fclose(IN);
+
+			//Clear Buffer
+		for (int x = 0; x < SIZE; x++)
+		{
+			for (int y = 0; y < SIZE; y++)
+			{
+				Buffer->Buffer[x][y].DesX = 0.0f;
+				Buffer->Buffer[x][y].DesY = 0.0f;
+
+				Buffer->Buffer[x][y].SrcX = 0.0f;
+				Buffer->Buffer[x][y].SrcY = 0.0f;
+			}
+		}
+
+		//Iterate Through All Tubes in System (Calcuate Changes That Need To Be Made To The System)
+		for (int x = 0; x < SIZE; x++)
+		{
+			for (int y = 0; y < SIZE; y++)
+			{
+				//Where to take chems from Sutract delta from this location
+				int SrcX = (int)System->Tubes[x][y].SrcX;
+				int SrcY = (int)System->Tubes[x][y].SrcY;
+
+				//Where to put chemicals add delta to this location
+				int DesX = (int)System->Tubes[x][y].DesX;
+				int DesY = (int)System->Tubes[x][y].DesY;
+
+				//printf("No Offset Take: %d, %d, Put: %d, %d\n\n", SrcX, SrcY, DesX, DesY);
+
+				//Add Offset For Src (Bias)
+				SrcX = SrcX + System->BiasSrc[x][y].OffsetX;
+				SrcY = SrcY + System->BiasSrc[x][y].OffsetY;
+
+				//Add Offset For Des (Bias)
+				DesX = DesX + System->BiasDes[x][y].OffsetX;
+				DesY = DesY + System->BiasDes[x][y].OffsetY;
+
+				//Mod the Src And Dest To Keep Values In Range So Not taking chems or putting chems ouside of data array
+				SrcX = (SrcX + SIZE) % SIZE;
+				SrcY = (SrcY + SIZE) % SIZE;
+				DesX = (DesX + SIZE) % SIZE;
+				DesY = (DesY + SIZE) % SIZE;
+
+				//Iterate Through All Points Within KArma Cordiante Points Away
+				for (int Kx = -Karma; Kx < Karma; Kx++)
+				{
+					for (int Ky = -Karma; Ky < Karma; Ky++)
+					{
+						//Make Sure The Actaul Physical Disatnce From The Point To Source Is <= To Karma
+						double KarmaDistance = sqrt(pow(SrcX + Kx, 2) + pow(SrcY + Ky, 2));
+						if (KarmaDistance <= Karma)
+						{
+							//Fit Spots Around Karma Into Array Size
+							int KSrcX = (SrcX + Kx + SIZE) % SIZE;
+							int KSrcY = (SrcY + Ky + SIZE) % SIZE;
+							int KDesX = (DesX + Kx + SIZE) % SIZE;
+							int KDesY = (DesY + Ky + SIZE) % SIZE;
+
+							//printf("\nOrgin KSrcX: %d KSrcY: %d KDesX: %d KDesY: %d", SrcX, SrcY, DesX, DesY);
+							//printf("\nKarma Offset KSrcX: %d KSrcY: %d KDesX: %d KDesY: %d", KSrcX, KSrcY, KDesX, KDesY);
+
+							//Calcaute How May Chemicals To Take From SOurce And Be TRansfered To Des
+							//double KSrcXTake = GetChemToTake(Karma, KarmaDistance, Buffer->Buffer[KSrcX][KSrcY].SrcX, Buffer->Buffer[KDesX][KDesY].SrcX, delta);
+							//double KSrcYTake = GetChemToTake(Karma, KarmaDistance, Buffer->Buffer[KSrcX][KSrcY].SrcY, Buffer->Buffer[KDesX][KDesY].SrcY, delta);
+
+							//double KDesXTake = GetChemToTake(Karma, KarmaDistance, Buffer->Buffer[KSrcX][KSrcY].DesX, Buffer->Buffer[KDesX][KDesY].DesX, delta);
+							//double KDesYTake = GetChemToTake(Karma, KarmaDistance, Buffer->Buffer[KSrcX][KSrcY].DesY, Buffer->Buffer[KDesX][KDesY].DesY, delta);
+
+							//Take Chemicals From Src
+							//Buffer->Buffer[KSrcX][KSrcY].SrcX = Buffer->Buffer[KSrcX][KSrcY].SrcX - KSrcXTake;
+							//Buffer->Buffer[KSrcX][KSrcY].SrcY = Buffer->Buffer[KSrcX][KSrcY].SrcY - KSrcYTake;
+
+							//Buffer->Buffer[KSrcX][KSrcY].DesX = Buffer->Buffer[KSrcX][KSrcY].DesX - KDesXTake;
+							//Buffer->Buffer[KSrcX][KSrcY].DesY = Buffer->Buffer[KSrcX][KSrcY].DesY - KDesYTake;
+
+							//Put Chemicals In Des
+							//Buffer->Buffer[KDesX][KDesY].SrcX = Buffer->Buffer[KDesX][KDesY].SrcX + KSrcXTake;
+							//Buffer->Buffer[KDesX][KDesY].SrcY = Buffer->Buffer[KDesX][KDesY].SrcY + KSrcYTake;
+
+							//Buffer->Buffer[KDesX][KDesY].DesX = Buffer->Buffer[KDesX][KDesY].DesX + KDesXTake;
+							//Buffer->Buffer[KDesX][KDesY].DesY = Buffer->Buffer[KDesX][KDesY].DesY + KDesYTake;
+						}
+					}
+				}
+			}
+		}
+
+
+
+		return 1;
+*/
